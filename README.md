@@ -1,4 +1,4 @@
-Videri cookbooks
+OutFront cookbooks
 =================
 
 Openfire cookbook
