@@ -1,0 +1,4 @@
+Videri cookbooks
+=================
+
+Openfire cookbook

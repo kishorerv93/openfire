@@ -1,0 +1,228 @@
+#!/bin/sh
+#
+# openfirectl	Stops and starts the Openfire XMPP service.
+#
+# chkconfig: 2345 99 1
+# description: Openfire is an XMPP server, which is a server that facilitates \
+#	XML based communication, such as chat.
+# config: /opt/openfire/conf/openfire.xml
+# config: /etc/sysconfig/openfire
+# pidfile: /var/run/openfire.pid
+#
+# This script manages the openfire daemon process.  This script should
+# only be run as root and may double as an init script if desired.  You
+# can symlink it into your rc directories manually, or if you have
+# chkconfig available, you can copy/symlink it into your init.d directory
+# and chkconfig --add it.  It's recommended to name it openfire instead of
+# openfirectl in the init.d directory.
+#
+
+#####
+# Begin setup work
+#####
+
+# Initialization
+CMD=$1
+PATH="/sbin:/bin:/usr/bin:/usr/sbin"
+RETVAL=0
+
+# Make sure we are running as root
+set `/usr/bin/id`
+if [ $1 != "uid=0(root)" ]; then
+	echo "$0: must be run as root"
+	exit 1
+fi
+
+# Get config from sysconfig if on a system that supports it.
+[ -f "/etc/sysconfig/openfire" ] && . /etc/sysconfig/openfire
+
+# Define the service
+DESC="openfire"
+
+# If openfire user is not set elsewhere, set to daemon.
+[ -z "$OPENFIRE_USER" ] && OPENFIRE_USER="daemon"
+
+# If pid file path is not set elsewhere, set to /var/run/openfire.pid.
+[ -z "$OPENFIRE_PIDFILE" ] && OPENFIRE_PIDFILE="/var/run/openfire.pid"
+
+# -----------------------------------------------------------------
+
+# If a openfire home variable has not been specified, try to determine it.
+if [ -z "$OPENFIRE_HOME" -o ! -d "$OPENFIRE_HOME" ]; then
+	if [ -d "/usr/share/openfire" ]; then
+		OPENFIRE_HOME="/usr/share/openfire"
+	elif [ -d "/usr/local/openfire" ]; then
+		OPENFIRE_HOME="/usr/local/openfire"
+	elif [ -d "/opt/openfire" ]; then
+		OPENFIRE_HOME="/opt/openfire"
+	else
+		echo "Could not find Openfire installation under /opt, /usr/share, or /usr/local."
+		if [ -f "/etc/sysconfig" ]; then
+			echo "Please specify the Openfire installation location as variable OPENFIRE_HOME"
+			echo "in /etc/sysconfig/openfire."
+		fi
+		exit 1
+	fi
+fi
+
+# If log path is not set already, set to $OPENFIRE_HOME/logs.
+[ -z "$OPENFIRE_LOGDIR" ] && OPENFIRE_LOGDIR="${OPENFIRE_HOME}/logs"
+
+# Attempt to locate java installation.
+if [ -z "$JAVA_HOME" ]; then
+	if [ -d "${OPENFIRE_HOME}/jre" ]; then
+		JAVA_HOME="${OPENFIRE_HOME}/jre"
+	elif [ -d "/etc/alternatives/jre" ]; then
+		JAVA_HOME="/etc/alternatives/jre"
+	else
+		jdks=`ls -r1d /usr/java/j*`
+		for jdk in $jdks; do
+			if [ -f "${jdk}/bin/java" ]; then
+				JAVA_HOME="$jdk"
+				break
+			fi
+		done
+		if [ -z "$JAVA_HOME" ]; then
+			if [ -d "/usr/java" -a -d "/usr/java/bin" ]; then
+				JAVA_HOME="/usr/java"
+			fi
+		fi
+	fi
+fi
+JAVACMD="${JAVA_HOME}/bin/java"
+
+if [ ! -d "$JAVA_HOME" -o ! -x "$JAVACMD" ]; then
+	echo "Error: JAVA_HOME is not defined correctly."
+	echo "       Can not sure execute $JAVACMD."
+	exit 1
+fi
+
+# Prepare location of openfire libraries
+OPENFIRE_LIB="${OPENFIRE_HOME}/lib"
+
+# Prepare openfire command line
+OPENFIRE_OPTS="${OPENFIRE_OPTS} -DopenfireHome=${OPENFIRE_HOME} -Dopenfire.lib.dir=${OPENFIRE_LIB}"
+
+# Prepare local java class path
+if [ -z "$LOCALCLASSPATH" ]; then
+	LOCALCLASSPATH="${OPENFIRE_LIB}/startup.jar"
+else
+	LOCALCLASSPATH="${OPENFIRE_LIB}/startup.jar:${LOCALCLASSPATH}"
+fi
+
+# Export any necessary variables
+export JAVA_HOME JAVACMD
+
+# Lastly, prepare the full command that we are going to run.
+OPENFIRE_RUN_CMD="${JAVACMD} -server ${OPENFIRE_OPTS} -classpath \"${LOCALCLASSPATH}\" -jar \"${OPENFIRE_LIB}/startup.jar\""
+
+#####
+# End setup work
+#####
+
+is_running() {
+    if [ -f $OPENFIRE_PIDFILE ]; then
+        PID=`cat $OPENFIRE_PIDFILE`
+        if [ -n "$PID" ]; then
+            return 0
+        else
+            return 1
+        fi
+    else
+        return 1
+    fi
+}
+
+start() {
+
+    if ! is_running; then
+        echo "Starting $DESC"
+
+		PID=$(
+			su - $OPENFIRE_USER -c "
+				nohup $OPENFIRE_RUN_CMD > $OPENFIRE_LOGDIR/nohup.out 2>&1 &
+				echo \$!
+			"
+        )
+        RETVAL=$?
+        sleep 1
+
+		if [ $RETVAL -eq 0 -a ! -z "$OPENFIRE_PIDFILE" ]; then
+			echo $PID > $OPENFIRE_PIDFILE
+		fi
+
+        if is_running; then
+            echo "$DESC: running @ pid $PID"
+            RETVAL=0
+        else
+            echo "$DESC service did not start"
+            RETVAL=2
+        fi
+    else
+      echo "$DESC: already running (pid $PID)"
+      RETVAL=0
+    fi
+}
+
+stop() {
+
+    PID=`cat $OPENFIRE_PIDFILE`
+    while is_running
+    do
+        echo "Stopping $DESC @ pid $PID"
+        [ -f "$OPENFIRE_PIDFILE" ] && kill $PID
+        sleep 5
+        ! [ -d "/proc/$PID" ] && rm -f "$OPENFIRE_PIDFILE"
+    done
+}
+
+restart() {
+	stop
+	start
+}
+
+status() {
+
+	echo "DESC                : $DESC"
+	echo "OPENFIRE_USER       : $OPENFIRE_USER"
+	echo "OPENFIRE_PIDFILE    : $OPENFIRE_PIDFILE"
+	echo "OPENFIRE_HOME       : $OPENFIRE_HOME"
+	echo "OPENFIRE_LOGDIR     : $OPENFIRE_LOGDIR"
+	echo "OPENFIRE_OPTS       : $OPENFIRE_OPTS"
+	echo "BASE_DIR            : $BASE_DIR"
+	echo "OPENFIRE_DBNAME     : $OPENFIRE_DBNAME"
+	echo "OPENFIRE_MYSQL_HOST : $OPENFIRE_MYSQL_HOST"
+	echo "OPENFIRE_MYSQL_PORT : $OPENFIRE_MYSQL_PORT"
+	echo "JAVA_HOME           : $JAVA_HOME"
+	echo " "
+
+    if is_running; then
+        echo "$DESC is running @ pid $PID"
+        RETVAL=0
+    else
+        echo "$DESC is not running"
+        RETVAL=2
+    fi
+}
+
+
+# Handle how we were called.
+case "$CMD" in
+	start)
+		start
+		;;
+	stop)
+		stop
+		;;
+	restart)
+		restart
+		;;
+	status)
+		status
+		;;
+	*)
+        echo "Usage $0 {start|stop|restart|status}"
+		RETVAL=1
+esac
+
+exit $RETVAL
